@@ -6,7 +6,7 @@
         "${workspaceFolder}/**",
         "/usr/include",
         "/usr/local/include",
-        "/usr/lib/gcc/x86_64-linux-gnu/13/include"  // <- verifica tu versión de GCC
+        "/usr/lib/gcc/x86_64-linux-gnu/13/include"
       ],
       "defines": [],
       "compilerPath": "/usr/bin/gcc",
@@ -17,3 +17,4 @@
   ],
   "version": 4
 }
+
