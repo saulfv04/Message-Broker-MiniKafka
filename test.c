@@ -1,7 +1,7 @@
 #include <stdio.h>
 
 int main() {
-    printf("Hola Mundo\n");
+    printf("Hospital pene\n");
     return 0;
 }
 
