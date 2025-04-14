@@ -2,9 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #define LONGITUD_MAXIMA_MENSAJE 256
 #define LONGITUD_MAXIMA_MENSAJES 10
+#define NOMBRE_MEMORIA "/memoria_cola_mensajes"
 
 typedef struct {
     int id;
@@ -59,25 +64,53 @@ void imprimir_mensaje(Mensaje *m) {
 }
 
 int main() {
-    ColaMensajes cola;
-    inicializar_cola(&cola);
+    int shm_fd;
+    ColaMensajes *cola;
 
-    // Insertar 3 mensajes
+    // Crear y abrir el objeto de memoria compartida
+    shm_fd = shm_open(NOMBRE_MEMORIA, O_CREAT | O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("Error al crear la memoria compartida");
+        exit(EXIT_FAILURE);
+    }
+
+    // Ajustar el tamaño del objeto de memoria compartida
+    if (ftruncate(shm_fd, sizeof(ColaMensajes)) == -1) {
+        perror("Error en ftruncate");
+        exit(EXIT_FAILURE);
+    }
+
+    // Mapear la memoria compartida al espacio de direcciones
+    cola = mmap(NULL, sizeof(ColaMensajes), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (cola == MAP_FAILED) {
+        perror("Error en mmap");
+        exit(EXIT_FAILURE);
+    }
+
+    // Inicializar la cola (esto solo se debería hacer una vez, por un proceso inicializador)
+    inicializar_cola(cola);
+
+    // Insertar 11 mensajes
     for (int i = 1; i <= 11; i++) {
         Mensaje m;
         m.id = i;
         snprintf(m.contenido, LONGITUD_MAXIMA_MENSAJE, "Este es el mensaje número %d", i);
         m.timestamp = time(NULL);
-        insertar_mensaje(&cola, m);
+        insertar_mensaje(cola, m);
     }
 
-    // Consumir los mensajes
+    // Consumir mensajes
     for (int i = 0; i < 11; i++) {
         Mensaje recibido;
-        if (consumir_mensaje(&cola, &recibido) == 0) {
+        if (consumir_mensaje(cola, &recibido) == 0) {
             imprimir_mensaje(&recibido);
         }
     }
+
+    // Desmapear y cerrar memoria compartida
+    munmap(cola, sizeof(ColaMensajes));
+    close(shm_fd);
+    shm_unlink(NOMBRE_MEMORIA);  // Eliminar del sistema
 
     return 0;
 }
