@@ -112,6 +112,7 @@ int main() {
     close(shm_fd);
     shm_unlink(NOMBRE_MEMORIA);  // Eliminar del sistema
 
+    //Probando
     return 0;
 // Compilar con: gcc -o broker src/broker.c -lrt
 
