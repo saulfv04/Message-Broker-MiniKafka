@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h> // ⬅️ NUEVO: Mutexes
 
 #define LONGITUD_MAXIMA_MENSAJE 256
 #define LONGITUD_MAXIMA_MENSAJES 10
@@ -21,11 +22,16 @@ typedef struct {
     Mensaje mensajes[LONGITUD_MAXIMA_MENSAJES];
     int frente;
     int final;
+    pthread_mutex_t mutex; // ⬅️ NUEVO: Mutex embebido
 } ColaMensajes;
 
 void inicializar_cola(ColaMensajes *cola) {
     cola->frente = 0;
     cola->final = 0;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED); // Para memoria compartida
+    pthread_mutex_init(&(cola->mutex), &attr);
 }
 
 int esta_llena(ColaMensajes *cola) {
@@ -37,27 +43,39 @@ int esta_vacia(ColaMensajes *cola) {
 }
 
 int insertar_mensaje(ColaMensajes *cola, Mensaje nuevo) {
+    pthread_mutex_lock(&(cola->mutex)); // ⬅️ NUEVO: Bloqueo
+
     if (esta_llena(cola)) {
         printf("Cola llena. No se puede insertar el mensaje.\n");
+        pthread_mutex_unlock(&(cola->mutex));
         return -1;
     }
+
     cola->mensajes[cola->final] = nuevo;
     cola->final = (cola->final + 1) % LONGITUD_MAXIMA_MENSAJES;
+
+    pthread_mutex_unlock(&(cola->mutex)); // ⬅️ NUEVO: Desbloqueo
     return 0;
 }
 
 int consumir_mensaje(ColaMensajes *cola, Mensaje *salida) {
+    pthread_mutex_lock(&(cola->mutex)); // ⬅️ NUEVO: Bloqueo
+
     if (esta_vacia(cola)) {
         printf("Cola vacía. No hay mensajes para consumir.\n");
+        pthread_mutex_unlock(&(cola->mutex));
         return -1;
     }
+
     *salida = cola->mensajes[cola->frente];
     cola->frente = (cola->frente + 1) % LONGITUD_MAXIMA_MENSAJES;
+
+    pthread_mutex_unlock(&(cola->mutex)); // ⬅️ NUEVO: Desbloqueo
     return 0;
 }
 
 void imprimir_mensaje(Mensaje *m) {
-    printf(" Mensaje recibido:\n");
+    printf("Mensaje recibido:\n");
     printf("  ID: %d\n", m->id);
     printf("  Contenido: %s\n", m->contenido);
     printf("  Timestamp: %s\n", ctime(&(m->timestamp)));
@@ -87,7 +105,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // Inicializar la cola (esto solo se debería hacer una vez, por un proceso inicializador)
+    // Inicializar la cola (solo una vez, evitar duplicarlo)
     inicializar_cola(cola);
 
     // Insertar 11 mensajes
@@ -110,10 +128,8 @@ int main() {
     // Desmapear y cerrar memoria compartida
     munmap(cola, sizeof(ColaMensajes));
     close(shm_fd);
-    shm_unlink(NOMBRE_MEMORIA);  // Eliminar del sistema
+    shm_unlink(NOMBRE_MEMORIA); // Eliminar del sistema
 
-    //Probando
     return 0;
-// Compilar con: gcc -o broker src/broker.c -lrt
-
+    // Compilar con: gcc -o broker broker.c -lrt -lpthread
 }
