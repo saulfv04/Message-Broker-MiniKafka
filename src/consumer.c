@@ -22,62 +22,63 @@ typedef struct {
 } Mensaje;
 
 int main() {
+    int socket_cliente = socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_cliente == -1) {
+        perror("Error al crear el socket");
+        return 1;
+    }
+
+    struct sockaddr_in direccion_servidor;
+    direccion_servidor.sin_family = AF_INET;
+    direccion_servidor.sin_port = htons(PUERTO);
+
+    if (inet_pton(AF_INET, IP_SERVIDOR, &direccion_servidor.sin_addr) <= 0) {
+        perror("Dirección inválida");
+        close(socket_cliente);
+        return 1;
+    }
+
+    if (connect(socket_cliente, (struct sockaddr*)&direccion_servidor, sizeof(direccion_servidor)) < 0) {
+        perror("Error en la conexión");
+        close(socket_cliente);
+        return 1;
+    }
+
+    // Identificarse como consumidor
+    char tipo = 'C';
+    send(socket_cliente, &tipo, 1, 0);
+
+    // Recibir el id asignado por el broker
+    int id_consumidor;
+    recv(socket_cliente, &id_consumidor, sizeof(int), 0);
+
     int contador_mensajes = 0;
-    int cola_vacia = 0;
-    
-    while (!cola_vacia) {
-        // Crear socket para cada solicitud
-        int socket_cliente = socket(AF_INET, SOCK_STREAM, 0);
-        if (socket_cliente == -1) {
-            perror("Error al crear el socket");
-            return 1;
-        }
+    while (1) {
+        // Pedir un mensaje
+        char peticion = 'R';
+        send(socket_cliente, &peticion, 1, 0);
+        send(socket_cliente, &id_consumidor, sizeof(int), 0);
 
-        // Configurar dirección del servidor
-        struct sockaddr_in direccion_servidor;
-        direccion_servidor.sin_family = AF_INET;
-        direccion_servidor.sin_port = htons(PUERTO);
-        
-        if (inet_pton(AF_INET, IP_SERVIDOR, &direccion_servidor.sin_addr) <= 0) {
-            perror("Dirección inválida");
-            close(socket_cliente);
-            return 1;
-        }
-
-        // Conectar al servidor
-        if (connect(socket_cliente, (struct sockaddr*)&direccion_servidor, sizeof(direccion_servidor)) < 0) {
-            perror("Error en la conexión");
-            close(socket_cliente);
-            return 1;
-        }
-
-        // Enviar identificador de consumidor
-        char tipo = 'C';
-        send(socket_cliente, &tipo, 1, 0);
-
-        // Recibir mensaje o notificación de cola vacía
         char buffer[sizeof(Mensaje) + 1];
         int bytes_recibidos = recv(socket_cliente, buffer, sizeof(buffer) - 1, 0);
-        
+
         if (bytes_recibidos > 0) {
-            // Verificar si es un mensaje o la señal de "VACIO"
             if (bytes_recibidos == 6 && strncmp(buffer, "VACIO", 5) == 0) {
-                printf("No hay más mensajes disponibles.\n");
-                cola_vacia = 1;
+                printf("No hay mensajes, esperando...\n");
+                sleep(1); // Espera 1 segundo antes de volver a pedir
+                continue; // No termina, sigue pidiendo
             } else if (bytes_recibidos == sizeof(Mensaje)) {
-                // Convertir el buffer recibido a un mensaje
                 Mensaje *msg = (Mensaje*)buffer;
                 contador_mensajes++;
-                
                 printf("Mensaje #%d recibido: %s\n", msg->id, msg->contenido);
             }
         } else {
             perror("Error al recibir datos");
+            break;
         }
-
-        close(socket_cliente);
     }
-    
+
+    close(socket_cliente);
     printf("Total de mensajes leídos: %d\n", contador_mensajes);
     return 0;
 }

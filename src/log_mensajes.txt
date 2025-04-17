@@ -1,30 +1,13 @@
-ID: 100 | Contenido: Mensaje desde productor 1 - #0 | Timestamp: Mon Apr 14 15:19:20 2025
-ID: 300 | Contenido: Mensaje desde productor 3 - #0 | Timestamp: Mon Apr 14 15:19:20 2025
-ID: 200 | Contenido: Mensaje desde productor 2 - #0 | Timestamp: Mon Apr 14 15:19:20 2025
-ID: 101 | Contenido: Mensaje desde productor 1 - #1 | Timestamp: Mon Apr 14 15:19:21 2025
-ID: 201 | Contenido: Mensaje desde productor 2 - #1 | Timestamp: Mon Apr 14 15:19:21 2025
-ID: 301 | Contenido: Mensaje desde productor 3 - #1 | Timestamp: Mon Apr 14 15:19:21 2025
-ID: 102 | Contenido: Mensaje desde productor 1 - #2 | Timestamp: Mon Apr 14 15:19:22 2025
-ID: 202 | Contenido: Mensaje desde productor 2 - #2 | Timestamp: Mon Apr 14 15:19:22 2025
-ID: 302 | Contenido: Mensaje desde productor 3 - #2 | Timestamp: Mon Apr 14 15:19:22 2025
-ID: 103 | Contenido: Mensaje desde productor 1 - #3 | Timestamp: Mon Apr 14 15:19:23 2025
-ID: 203 | Contenido: Mensaje desde productor 2 - #3 | Timestamp: Mon Apr 14 15:19:23 2025
-ID: 303 | Contenido: Mensaje desde productor 3 - #3 | Timestamp: Mon Apr 14 15:19:23 2025
-ID: 104 | Contenido: Mensaje desde productor 1 - #4 | Timestamp: Mon Apr 14 15:19:24 2025
-ID: 204 | Contenido: Mensaje desde productor 2 - #4 | Timestamp: Mon Apr 14 15:19:24 2025
-ID: 304 | Contenido: Mensaje desde productor 3 - #4 | Timestamp: Mon Apr 14 15:19:24 2025
-ID: 100 | Contenido: Mensaje desde productor 1 - #0 | Timestamp: Mon Apr 14 17:59:24 2025
-ID: 300 | Contenido: Mensaje desde productor 3 - #0 | Timestamp: Mon Apr 14 17:59:24 2025
-ID: 200 | Contenido: Mensaje desde productor 2 - #0 | Timestamp: Mon Apr 14 17:59:24 2025
-ID: 201 | Contenido: Mensaje desde productor 2 - #1 | Timestamp: Mon Apr 14 17:59:25 2025
-ID: 101 | Contenido: Mensaje desde productor 1 - #1 | Timestamp: Mon Apr 14 17:59:25 2025
-ID: 301 | Contenido: Mensaje desde productor 3 - #1 | Timestamp: Mon Apr 14 17:59:26 2025
-ID: 102 | Contenido: Mensaje desde productor 1 - #2 | Timestamp: Mon Apr 14 17:59:27 2025
-ID: 202 | Contenido: Mensaje desde productor 2 - #2 | Timestamp: Mon Apr 14 17:59:27 2025
-ID: 302 | Contenido: Mensaje desde productor 3 - #2 | Timestamp: Mon Apr 14 17:59:27 2025
-ID: 103 | Contenido: Mensaje desde productor 1 - #3 | Timestamp: Mon Apr 14 17:59:28 2025
-ID: 203 | Contenido: Mensaje desde productor 2 - #3 | Timestamp: Mon Apr 14 17:59:28 2025
-ID: 303 | Contenido: Mensaje desde productor 3 - #3 | Timestamp: Mon Apr 14 17:59:28 2025
-ID: 204 | Contenido: Mensaje desde productor 2 - #4 | Timestamp: Mon Apr 14 17:59:27 2025
-ID: 104 | Contenido: Mensaje desde productor 1 - #4 | Timestamp: Mon Apr 14 17:59:27 2025
-ID: 304 | Contenido: Mensaje desde productor 3 - #4 | Timestamp: Mon Apr 14 17:59:27 2025
+
+ID: 1 | hola | 1744826539
+ID: 2 | pedro | 1744826596
+ID: 1 | Hola | 1744826851
+ID: 1 | Pedro | 1744826855
+ID: 1 | Hola Saul | 1744839459
+ID: 2 | Hola Yassir | 1744839463
+ID: 3 | Hola Manuel | 1744839467
+ID: 4 | Hola Saul | 1744839497
+ID: 1 | Hola madre | 1744849089
+ID: 1 | Hola tio | 1744849101
+ID: 2 | Hola tio | 1744849111
+ID: 2 | Hola madre | 1744849111
