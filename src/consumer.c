@@ -14,6 +14,7 @@
 #define PUERTO 4444
 #define LONGITUD_MAXIMA_MENSAJE 256
 #define IP_SERVIDOR "127.0.0.1"
+#define LONGITUD_NOMBRE_GRUPO 50
 
 typedef struct {
     int id;
@@ -48,9 +49,27 @@ int main() {
     char tipo = 'C';
     send(socket_cliente, &tipo, 1, 0);
 
+    // Solicitar el nombre del grupo
+    char nombre_grupo[LONGITUD_NOMBRE_GRUPO];
+    printf("Ingresa el nombre del grupo al que deseas unirte: ");
+    fgets(nombre_grupo, LONGITUD_NOMBRE_GRUPO, stdin);
+    nombre_grupo[strcspn(nombre_grupo, "\n")] = 0; // Quitar salto de línea
+
+    // Enviar el nombre del grupo al broker
+    send(socket_cliente, nombre_grupo, LONGITUD_NOMBRE_GRUPO, 0);
+
     // Recibir el id asignado por el broker
     int id_consumidor;
-    recv(socket_cliente, &id_consumidor, sizeof(int), 0);
+    int bytes = recv(socket_cliente, &id_consumidor, sizeof(int), 0);
+    if (bytes != sizeof(int)) {
+        char buffer[32];
+        recv(socket_cliente, buffer, sizeof(buffer)-1, 0);
+        buffer[sizeof(buffer)-1] = 0;
+        printf("Error del broker: %s\n", buffer);
+        close(socket_cliente);
+        return 1;
+    }
+    
 
     int contador_mensajes = 0;
     while (1) {
@@ -64,8 +83,8 @@ int main() {
 
         if (bytes_recibidos > 0) {
             if (bytes_recibidos == 6 && strncmp(buffer, "VACIO", 5) == 0) {
-                printf("No hay mensajes, esperando...\n");
-                sleep(1); // Espera 1 segundo antes de volver a pedir
+                //printf("No hay mensajes, esperando...\n");
+                //sleep(3); // Espera 1 segundo antes de volver a pedir
                 continue; // No termina, sigue pidiendo
             } else if (bytes_recibidos == sizeof(Mensaje)) {
                 Mensaje *msg = (Mensaje*)buffer;

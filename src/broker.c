@@ -18,6 +18,9 @@
 #define LONGITUD_MAXIMA_MENSAJES 100
 #define NOMBRE_MEMORIA "/memoria_cola_mensajes"
 #define MAX_CONSUMIDORES 32
+#define MAX_GRUPOS 16
+#define MAX_CONSUMIDORES_POR_GRUPO 16
+#define LONGITUD_NOMBRE_GRUPO 32
 
 // Estructura de mensaje individual
 typedef struct {
@@ -46,6 +49,15 @@ typedef struct {
     int offset; // Cuántos mensajes ha leído este consumidor
 } OffsetConsumidor;
 
+// Estructura para manejar grupos de consumidores
+typedef struct {
+    char nombre[LONGITUD_NOMBRE_GRUPO];
+    int consumidores[MAX_CONSUMIDORES_POR_GRUPO]; // IDs de consumidores activos
+    int num_consumidores;
+    int offset; // Offset de grupo
+    int turno;  // Índice del consumidor al que le toca leer
+} GrupoConsumidor;
+
 // Variables globales
 ColaMensajes *cola;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -59,6 +71,10 @@ pthread_mutex_t mutex_offsets = PTHREAD_MUTEX_INITIALIZER;
 
 int ids_libres[MAX_CONSUMIDORES];      // Pila de IDs libres
 int tope_libres = 0;                   // Tope de la pila
+
+GrupoConsumidor grupos[MAX_GRUPOS];
+int num_grupos = 0;
+pthread_mutex_t mutex_grupos = PTHREAD_MUTEX_INITIALIZER;
 
 // Funciones para operar con la cola
 int esta_llena(ColaMensajes *c) {
@@ -158,6 +174,36 @@ void* manejar_cliente(void *arg) {
             pthread_mutex_unlock(&mutex_persistencia);
         }
     } else if (tipo == 'C') { // Consumidor
+        char nombre_grupo[LONGITUD_NOMBRE_GRUPO];
+        if (recv(socket_cliente, nombre_grupo, LONGITUD_NOMBRE_GRUPO, 0) <= 0) {
+            close(socket_cliente);
+            return NULL;
+        }
+
+        // Buscar o crear el grupo
+        pthread_mutex_lock(&mutex_grupos);
+        int grupo_idx = -1;
+        for (int i = 0; i < num_grupos; ++i) {
+            if (strcmp(grupos[i].nombre, nombre_grupo) == 0) {
+                grupo_idx = i;
+                break;
+            }
+        }
+        if (grupo_idx == -1 && num_grupos < MAX_GRUPOS) {
+            grupo_idx = num_grupos++;
+            strncpy(grupos[grupo_idx].nombre, nombre_grupo, LONGITUD_NOMBRE_GRUPO);
+            grupos[grupo_idx].num_consumidores = 0;
+            grupos[grupo_idx].offset = 0;
+            grupos[grupo_idx].turno = 0;
+        }
+        if (grupo_idx == -1) {
+            pthread_mutex_unlock(&mutex_grupos);
+            send(socket_cliente, "GRUPO_NO_DISPONIBLE", 20, 0);
+            close(socket_cliente);
+            return NULL;
+        }
+        pthread_mutex_unlock(&mutex_grupos);
+
         // Asignar ID único al consumidor
         int id_consumidor = -1;
         pthread_mutex_lock(&mutex_offsets);
@@ -177,35 +223,88 @@ void* manejar_cliente(void *arg) {
         // Enviar el id al consumidor
         send(socket_cliente, &id_consumidor, sizeof(int), 0);
 
+        pthread_mutex_lock(&mutex_grupos);
+        GrupoConsumidor *grupo = &grupos[grupo_idx];
+        if (grupo->num_consumidores < MAX_CONSUMIDORES_POR_GRUPO) {
+            grupo->consumidores[grupo->num_consumidores++] = id_consumidor;
+        } else {
+            pthread_mutex_unlock(&mutex_grupos);
+            send(socket_cliente, "GRUPO_LLENO", 12, 0);
+            close(socket_cliente);
+            return NULL;
+        }
+        pthread_mutex_unlock(&mutex_grupos);
+
         while (1) {
             char peticion;
             int r = recv(socket_cliente, &peticion, 1, 0);
-            if (r <= 0) break; // conexión cerrada o error
-            if (peticion != 'R') continue; // ignorar si no es petición válida
+            if (r <= 0) break;
+            if (peticion != 'R') continue;
 
-            // El consumidor debe enviar su id en cada petición
             int id_recv;
             r = recv(socket_cliente, &id_recv, sizeof(int), 0);
             if (r <= 0) break;
 
-            pthread_mutex_lock(&mutex);
-            int offset = offsets[id_recv].offset;
-            int mensajes_disponibles = (cola->final - cola->frente + LONGITUD_MAXIMA_MENSAJES) % LONGITUD_MAXIMA_MENSAJES;
-            if (offset < mensajes_disponibles) {
-                int idx = (cola->frente + offset) % LONGITUD_MAXIMA_MENSAJES;
-                Mensaje m = cola->mensajes[idx];
-                send(socket_cliente, &m, sizeof(Mensaje), 0);
-                offsets[id_recv].offset++;
-            } else {
-                send(socket_cliente, "VACIO", 6, 0);
+            int mensaje_enviado = 0;
+            int intentos = 0;
+            while (!mensaje_enviado && intentos < 50) { // Espera hasta 10 segundos (50*200ms)
+                pthread_mutex_lock(&mutex_grupos);
+                int es_turno = (grupo->consumidores[grupo->turno] == id_recv);
+                pthread_mutex_unlock(&mutex_grupos);
+
+                pthread_mutex_lock(&mutex);
+                int mensajes_disponibles = (cola->final - cola->frente + LONGITUD_MAXIMA_MENSAJES) % LONGITUD_MAXIMA_MENSAJES;
+                if (es_turno && grupo->offset < mensajes_disponibles) {
+                    int idx = (cola->frente + grupo->offset) % LONGITUD_MAXIMA_MENSAJES;
+                    Mensaje m = cola->mensajes[idx];
+                    send(socket_cliente, &m, sizeof(Mensaje), 0);
+                    grupo->offset++;
+
+                    pthread_mutex_lock(&mutex_grupos);
+                    grupo->turno = (grupo->turno + 1) % grupo->num_consumidores;
+                    pthread_mutex_unlock(&mutex_grupos);
+
+                    mensaje_enviado = 1;
+                }
+                pthread_mutex_unlock(&mutex);
+
+                if (!mensaje_enviado) {
+                    usleep(200000); // Espera 200 ms antes de volver a intentar
+                    intentos++;
+                }
             }
-            pthread_mutex_unlock(&mutex);
+            if (!mensaje_enviado) {
+                // Si después del timeout no hay mensaje, responde "VACIO"
+                Mensaje vacio;
+                vacio.id = -1;
+                strcpy(vacio.contenido, "VACIO");
+                vacio.timestamp = 0;
+                send(socket_cliente, &vacio, sizeof(Mensaje), 0);
+            }
         }
 
         pthread_mutex_lock(&mutex_offsets);
         offsets[id_consumidor].activo = 0;
         ids_libres[tope_libres++] = id_consumidor; // Push a la pila
         pthread_mutex_unlock(&mutex_offsets);
+
+        pthread_mutex_lock(&mutex_grupos);
+        int idx_out = -1;
+        for (int i = 0; i < grupo->num_consumidores; ++i) {
+            if (grupo->consumidores[i] == id_consumidor) {
+                idx_out = i;
+                break;
+            }
+        }
+        if (idx_out != -1) {
+            for (int i = idx_out; i < grupo->num_consumidores - 1; ++i) {
+                grupo->consumidores[i] = grupo->consumidores[i + 1];
+            }
+            grupo->num_consumidores--;
+            if (grupo->turno >= grupo->num_consumidores) grupo->turno = 0;
+        }
+        pthread_mutex_unlock(&mutex_grupos);
+
     }
 
     close(socket_cliente);
@@ -224,6 +323,7 @@ int main() {
         ids_libres[i] = MAX_CONSUMIDORES - 1 - i; // IDs del mayor al menor para pop eficiente
     }
     tope_libres = MAX_CONSUMIDORES;
+
 
     // Crear hilo de persistencia
     pthread_t hilo_persistencia;
