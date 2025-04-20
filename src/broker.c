@@ -562,4 +562,5 @@ int main(int argc, char *argv[]) {
     close(shm_fd);
     shm_unlink(NOMBRE_MEMORIA);
     return 0;
+    //probar con gcc broker.c -o broker -lpthread
 }
