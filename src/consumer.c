@@ -69,11 +69,11 @@ int main() {
         close(socket_cliente);
         return 1;
     }
-    
+
+    printf("ID de consumidor recibido: %d\n", id_consumidor);
 
     int contador_mensajes = 0;
     while (1) {
-        // Pedir un mensaje
         char peticion = 'R';
         send(socket_cliente, &peticion, 1, 0);
         send(socket_cliente, &id_consumidor, sizeof(int), 0);
@@ -82,12 +82,10 @@ int main() {
         int bytes_recibidos = recv(socket_cliente, buffer, sizeof(buffer) - 1, 0);
 
         if (bytes_recibidos > 0) {
-            if (bytes_recibidos == 6 && strncmp(buffer, "VACIO", 5) == 0) {
-                //printf("No hay mensajes, esperando...\n");
-                //sleep(3); // Espera 1 segundo antes de volver a pedir
-                continue; // No termina, sigue pidiendo
+            Mensaje *msg = (Mensaje*)buffer;
+            if (strcmp(msg->contenido, "VACIO") == 0) {
+                continue;
             } else if (bytes_recibidos == sizeof(Mensaje)) {
-                Mensaje *msg = (Mensaje*)buffer;
                 contador_mensajes++;
                 printf("Mensaje #%d recibido: %s\n", msg->id, msg->contenido);
             }
