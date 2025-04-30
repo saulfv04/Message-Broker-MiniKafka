@@ -16,7 +16,7 @@
 #define PUERTO 4444
 #define LONGITUD_MAXIMA_MENSAJE 256
 #define IP_SERVIDOR "127.0.0.1"
-#define LONGITUD_NOMBRE_GRUPO 50
+#define LONGITUD_NOMBRE_GRUPO 32
 
 typedef struct {
     int id;
@@ -108,7 +108,8 @@ int main() {
 
             if (bytes_recibidos > 0) {
                 Mensaje *msg = (Mensaje*)buffer;
-                if (strcmp(msg->contenido, "VACIO") == 0) {
+                if (msg->id == -1 || strcmp(msg->contenido, "VACIO") == 0) {
+                    // Mensaje vacío, no imprimir nada
                     usleep(100000); // Espera 100ms antes de volver a pedir
                     continue;
                 } else if (bytes_recibidos == sizeof(Mensaje)) {
