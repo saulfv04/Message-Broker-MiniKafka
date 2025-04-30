@@ -7,9 +7,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 
 #define PUERTO 4444
 #define LONGITUD_MAXIMA_MENSAJE 256
@@ -22,7 +24,18 @@ typedef struct {
     time_t timestamp;
 } Mensaje;
 
+// Variable global para terminar
+volatile sig_atomic_t terminar = 0;
+
+// Manejador de señal
+void handler(int sig) {
+    terminar = 1;
+}
+
 int main() {
+    signal(SIGINT, handler);
+    signal(SIGTERM, handler);
+
     int socket_cliente = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_cliente == -1) {
         perror("Error al crear el socket");
@@ -49,13 +62,8 @@ int main() {
     char tipo = 'C';
     send(socket_cliente, &tipo, 1, 0);
 
-    // Solicitar el nombre del grupo
-    char nombre_grupo[LONGITUD_NOMBRE_GRUPO];
-    printf("Ingresa el nombre del grupo al que deseas unirte: ");
-    fgets(nombre_grupo, LONGITUD_NOMBRE_GRUPO, stdin);
-    nombre_grupo[strcspn(nombre_grupo, "\n")] = 0; // Quitar salto de línea
-
-    // Enviar el nombre del grupo al broker
+    // Usar grupo fijo (puedes cambiar el nombre si quieres)
+    char nombre_grupo[LONGITUD_NOMBRE_GRUPO] = "grupo_auto";
     send(socket_cliente, nombre_grupo, LONGITUD_NOMBRE_GRUPO, 0);
 
     // Recibir el id asignado por el broker
@@ -73,29 +81,49 @@ int main() {
     printf("ID de consumidor recibido: %d\n", id_consumidor);
 
     int contador_mensajes = 0;
-    while (1) {
+    while (!terminar) {
         char peticion = 'R';
         send(socket_cliente, &peticion, 1, 0);
         send(socket_cliente, &id_consumidor, sizeof(int), 0);
 
         char buffer[sizeof(Mensaje) + 1];
-        int bytes_recibidos = recv(socket_cliente, buffer, sizeof(buffer) - 1, 0);
 
-        if (bytes_recibidos > 0) {
-            Mensaje *msg = (Mensaje*)buffer;
-            if (strcmp(msg->contenido, "VACIO") == 0) {
-                continue;
-            } else if (bytes_recibidos == sizeof(Mensaje)) {
-                contador_mensajes++;
-                printf("Mensaje #%d recibido: %s\n", msg->id, msg->contenido);
-            }
-        } else {
-            perror("Error al recibir datos");
+        fd_set readfds;
+        struct timeval tv;
+        FD_ZERO(&readfds);
+        FD_SET(socket_cliente, &readfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 200000; // 200 ms
+
+        int ready = select(socket_cliente + 1, &readfds, NULL, NULL, &tv);
+        if (ready < 0) {
+            if (terminar) break;
+            perror("select");
             break;
+        }
+        if (ready == 0) continue; // Timeout, vuelve a chequear terminar
+
+        if (FD_ISSET(socket_cliente, &readfds)) {
+            int bytes_recibidos = recv(socket_cliente, buffer, sizeof(buffer) - 1, 0);
+
+            if (bytes_recibidos > 0) {
+                Mensaje *msg = (Mensaje*)buffer;
+                if (strcmp(msg->contenido, "VACIO") == 0) {
+                    usleep(100000); // Espera 100ms antes de volver a pedir
+                    continue;
+                } else if (bytes_recibidos == sizeof(Mensaje)) {
+                    contador_mensajes++;
+                    printf("Mensaje #%d recibido: %s\n", msg->id, msg->contenido);
+                }
+            } else {
+                perror("Error al recibir datos");
+                break;
+            }
         }
     }
 
     close(socket_cliente);
-    printf("Total de mensajes leídos: %d\n", contador_mensajes);
+    printf("\nTotal de mensajes leídos: %d\n", contador_mensajes);
+    printf("Consumidor terminado limpiamente.\n");
     return 0;
 }
