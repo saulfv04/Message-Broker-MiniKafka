@@ -48,28 +48,19 @@ int main() {
     char tipo = 'P';
     send(socket_cliente, &tipo, 1, 0);
 
-    int id = 1;
+    // Enviar solo 1 mensaje
+    Mensaje m;
+    m.id = 1;
+    snprintf(m.contenido, LONGITUD_MAXIMA_MENSAJE, "Mensaje único");
+    m.timestamp = time(NULL);
+
+    send(socket_cliente, &m, sizeof(Mensaje), 0);
+
     char buffer[16];
-    while (1) {
-        Mensaje m;
-        m.id = id++;
-        printf("Escribe el mensaje a enviar (o 'salir' para terminar): ");
-        fgets(m.contenido, LONGITUD_MAXIMA_MENSAJE, stdin);
-        m.contenido[strcspn(m.contenido, "\n")] = 0; // quitar salto de línea
-        m.timestamp = time(NULL);
-
-        if (strcmp(m.contenido, "salir") == 0) break;
-
-        send(socket_cliente, &m, sizeof(Mensaje), 0);
-
-        int bytes = recv(socket_cliente, buffer, sizeof(buffer)-1, 0);
-        if (bytes > 0) {
-            buffer[bytes] = 0;
-            printf("Respuesta del broker: %s\n", buffer);
-        } else {
-            printf("Broker desconectado.\n");
-            break;
-        }
+    int bytes = recv(socket_cliente, buffer, sizeof(buffer)-1, 0);
+    if (bytes > 0) {
+        buffer[bytes] = 0;
+        printf("Respuesta del broker: %s\n", buffer);
     }
 
     close(socket_cliente);
