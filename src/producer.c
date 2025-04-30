@@ -1,7 +1,6 @@
 // producer.c (modificado)
-// - Contenido de mensaje quemado
-// - No lee de stdin
-// - Termina después de enviar un mensaje
+// - Contenido de mensaje leído de stdin
+// - Termina cuando el usuario escribe 'salir'
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,58 +21,48 @@ typedef struct {
     time_t timestamp;
 } Mensaje;
 
-int main(int argc, char *argv[]) {
-    int id_mensaje = 0;
-    if (argc > 1) {
-        id_mensaje = atoi(argv[1]); // ID pasado como argumento
-    }
-
-    // Crear socket
+int main() {
     int socket_cliente = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_cliente == -1) {
         perror("Error al crear el socket");
         return 1;
     }
 
-    // Configurar dirección del servidor
     struct sockaddr_in direccion_servidor;
     direccion_servidor.sin_family = AF_INET;
     direccion_servidor.sin_port = htons(PUERTO);
-    
+
     if (inet_pton(AF_INET, IP_SERVIDOR, &direccion_servidor.sin_addr) <= 0) {
         perror("Dirección inválida");
         close(socket_cliente);
         return 1;
     }
 
-    // Conectar al servidor
     if (connect(socket_cliente, (struct sockaddr*)&direccion_servidor, sizeof(direccion_servidor)) < 0) {
         perror("Error en la conexión");
         close(socket_cliente);
         return 1;
     }
 
-    // Enviar identificador de productor
+    // Identificarse como productor
     char tipo = 'P';
     send(socket_cliente, &tipo, 1, 0);
 
-    // Crear mensaje con contenido quemado
-    Mensaje msg;
-    msg.id = id_mensaje;
-    msg.timestamp = time(NULL);
-    sprintf(msg.contenido, "Mensaje automatizado #%d", id_mensaje);
+    // Enviar solo 1 mensaje
+    Mensaje m;
+    m.id = 1;
+    snprintf(m.contenido, LONGITUD_MAXIMA_MENSAJE, "Mensaje único");
+    m.timestamp = time(NULL);
 
-    // Enviar mensaje
-    if (send(socket_cliente, &msg, sizeof(Mensaje), 0) < 0) {
-        perror("Error al enviar mensaje");
-    } else {
-        printf("Productor %d: mensaje enviado\n", id_mensaje);
+    send(socket_cliente, &m, sizeof(Mensaje), 0);
+
+    char buffer[16];
+    int bytes = recv(socket_cliente, buffer, sizeof(buffer)-1, 0);
+    if (bytes > 0) {
+        buffer[bytes] = 0;
+        printf("Respuesta del broker: %s\n", buffer);
     }
 
-    // Esperar respuesta
-    char respuesta[10];
-    recv(socket_cliente, respuesta, sizeof(respuesta), 0);
-    
     close(socket_cliente);
     return 0;
 }
