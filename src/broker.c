@@ -772,7 +772,7 @@ int main(int argc, char *argv[]) {
         close(servidor);
         exit(EXIT_FAILURE);
     }
-    if (listen(servidor, MAX_CONEXIONES) == -1) {
+    if (listen(servidor, 512) == -1) {
         perror("listen");
         close(servidor);
         exit(EXIT_FAILURE);
