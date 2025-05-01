@@ -27,7 +27,7 @@
 #define _XOPEN_SOURCE 700
 #define PUERTO 4444
 #define LONGITUD_MAXIMA_MENSAJE 256
-#define LONGITUD_MAXIMA_MENSAJES 100
+#define LONGITUD_MAXIMA_MENSAJES 1024
 #define NOMBRE_MEMORIA "/memoria_cola_mensajes"
 
 #define MAX_CONEXIONES 10
@@ -64,13 +64,6 @@ typedef struct {
     int frente;
     int final;
     int base_offset; 
-    // Offset absoluto del mensaje en 'frente'
-    //El base offset se incrementa al consumir mensajes
-    // y se utiliza para determinar si un mensaje puede ser eliminado
-    //por ejemplo, si el offset de un grupo es menor que el base_offset
-    // significa que el grupo no ha leído el mensaje en 'frente'
-    // y por lo tanto el mensaje puede ser eliminado
-    
 
 } ColaMensajes;
 
@@ -79,11 +72,15 @@ typedef struct ConsumidorNodo {
     struct ConsumidorNodo* siguiente;
 } ConsumidorNodo;
 
+// --- PROBLEMA DE DUPLICACIÓN ---
+// Si varios consumidores del mismo grupo consumen a la vez, pueden leer el mismo mensaje antes de que el offset avance.
+// SOLUCIÓN: Añadimos un mutex por grupo para proteger la lógica de consumo y evitar duplicados.
 typedef struct {
     char nombre[LONGITUD_NOMBRE_GRUPO];
     ConsumidorNodo* consumidores;
     int num_consumidores;
     int offset; // Offset de grupo (absoluto)
+    pthread_mutex_t mutex; // Mutex específico para este grupo
 } GrupoConsumidor;
 
 typedef struct {
@@ -182,6 +179,9 @@ sem_t sem_mensajes_disponibles;
 static int next_msg_id = 1;
 pthread_mutex_t mutex_id = PTHREAD_MUTEX_INITIALIZER;
 
+pthread_cond_t cond_productores = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t mutex_productores = PTHREAD_MUTEX_INITIALIZER;
+
 // =======================
 //  FUNCIONES DE COLA DE MENSAJES
 // =======================
@@ -212,11 +212,6 @@ int consumir_mensaje(ColaMensajes *c, Mensaje *m) {
 // =======================
 //  FUNCIONES DE GRUPOS Y OFFSETS
 // =======================
-
-// Función para obtener el offset mínimo de todos los grupos
-// Esto se utiliza para determinar si un mensaje puede ser eliminado de la cola
-// de mensajes. Si el offset mínimo es mayor que el base_offset de la cola,
-// significa que todos los grupos han leído el mensaje en 'frente' y se puede
 int obtener_offset_minimo_grupos() {
     int min_offset = INT_MAX;
     pthread_mutex_lock(&mutex_grupos);
@@ -225,34 +220,17 @@ int obtener_offset_minimo_grupos() {
             min_offset = grupos[i].offset;
         }
     }
-    //tiene complejidad O(n)
-    //se podria optimizar si se mantiene un offset mínimo global
-    //pero eso complicaria la logica de los grupos
-    //y no es necesario para el funcionamiento
-    //o con un hashmap
-    //se puede hacer un hashmap de offsets por grupo
-    //pero eso complicaria la logica de los grupos
     pthread_mutex_unlock(&mutex_grupos);
     return min_offset;
 }
-
-//esta funcion se encarga de insertar un mensaje en la cola de mensajes
-//y de eliminar mensajes antiguos si es necesario
-//si la cola de mensajes esta llena y el offset minimo de los grupos
-//es menor o igual al base_offset de la cola, significa que
-//no se puede eliminar el mensaje mas antiguo
 
 int insertar_mensaje_con_retencion(ColaMensajes *c, Mensaje m) {
     if (esta_llena(c)) {
         int min_offset = obtener_offset_minimo_grupos();
         if (min_offset > c->base_offset) {
-            // Todos los grupos ya leyeron el mensaje más antiguo, avanza el frente
-    c->frente = (c->frente + 1) % LONGITUD_MAXIMA_MENSAJES;
-    c->base_offset++;
-    // Cuando "eliminas" un mensaje de la cola (avanzando frente y base_offset), simplemente dejas de considerar ese espacio como válido, pero no hay memoria dinámica que liberar.
-    // El espacio se reutiliza automáticamente cuando insertas un nuevo mensaje (por el manejo circular de la cola).
-} else {
-            // No se puede eliminar el mensaje más antiguo
+            c->frente = (c->frente + 1) % LONGITUD_MAXIMA_MENSAJES;
+            c->base_offset++;
+        } else {
             return -1;
         }
     }
@@ -274,23 +252,14 @@ void limpiar_cola_si_es_posible(ColaMensajes *c) {
 // =======================
 void agregar_a_persistencia(Mensaje m) {
     pthread_mutex_lock(&mutex_buffer);
-    // Debug: antes de escribir
-    fprintf(stderr,
-        "[PERSI] buffer_%c antes de escribir ID=%d en idx_escritura=%d\n",
-        (buffer_escritura == buffer_a ? 'A' : 'B'),
-        m.id, idx_escritura);
     buffer_escritura[idx_escritura++] = m;
-    if (idx_escritura == BUFFER_PERSISTENCIA) {
-        // Swap buffers
+    if (idx_escritura == BUFFER_PERSISTENCIA ||
+        ((terminar || stop_accept) && idx_escritura > 0)) {
         Mensaje *tmp = buffer_escritura;
         buffer_escritura = buffer_lectura;
         buffer_lectura = tmp;
         idx_lectura = idx_escritura;
         idx_escritura = 0;
-        fprintf(stderr,
-            "[PERSI] SWAP a buffer_%c, idx_lectura=%d, idx_escritura=%d\n",
-            (buffer_lectura == buffer_a ? 'A' : 'B'),
-            idx_lectura, idx_escritura);
         pthread_cond_signal(&cond_buffer);
     }
     pthread_mutex_unlock(&mutex_buffer);
@@ -299,7 +268,6 @@ void agregar_a_persistencia(Mensaje m) {
 void flush_persistencia() {
     pthread_mutex_lock(&mutex_buffer);
     if (idx_escritura > 0) {
-        // Debug: antes de forzar swap
         fprintf(stderr,
             "[PERSI] FLUSH forzando swap buffer_%c, idx_escritura=%d\n",
             (buffer_escritura == buffer_a ? 'A' : 'B'),
@@ -334,7 +302,6 @@ void agregar_a_log_consumo(EventoConsumo e) {
     pthread_mutex_unlock(&mutex_log);
 }
 
-// --- después de flush_persistencia() ---
 void flush_log_consumo() {
     pthread_mutex_lock(&mutex_log);
     if (idx_log_escritura > 0) {
@@ -363,30 +330,50 @@ void* hilo_flush_periodico(void* arg) {
 void* hilo_persistencia_func(void* arg) {
     FILE *f = fopen("persistencia_mensajes.txt", "a");
     if (!f) return NULL;
-    while (!terminar) {
+    while (1) {
         pthread_mutex_lock(&mutex_buffer);
         while (idx_lectura == 0 && !terminar)
             pthread_cond_wait(&cond_buffer, &mutex_buffer);
+
         int cantidad = idx_lectura;
         idx_lectura = 0;
         pthread_mutex_unlock(&mutex_buffer);
 
-        fprintf(stderr, "[PERSI] Hilo va a escribir %d mensajes de buffer_%c\n",
-            cantidad, (buffer_lectura == buffer_a ? 'A' : 'B'));
         for (int i = 0; i < cantidad; ++i) {
             Mensaje *m = &buffer_lectura[i];
             fprintf(f, "ID: %d | %s | %ld\n", m->id, m->contenido, m->timestamp);
         }
-        fflush(f); // Asegura que los datos se escriban en disco
+        fflush(f);
+
+        // Si terminar está activo y no quedan pendientes, salimos
+        pthread_mutex_lock(&mutex_buffer);
+        int quedan_pendientes = (idx_lectura > 0 || idx_escritura > 0);
+        int fin = terminar && !quedan_pendientes;
+        pthread_mutex_unlock(&mutex_buffer);
+        if (fin) break;
     }
+
+    // --- Flush final antes de salir ---
+    pthread_mutex_lock(&mutex_buffer);
+    int cantidad = idx_lectura;
+    idx_lectura = 0;
+    pthread_mutex_unlock(&mutex_buffer);
+    for (int i = 0; i < cantidad; ++i) {
+        Mensaje *m = &buffer_lectura[i];
+        fprintf(f, "ID: %d | %s | %ld\n", m->id, m->contenido, m->timestamp);
+    }
+    pthread_mutex_lock(&mutex_buffer);
+    cantidad = idx_escritura;
+    idx_escritura = 0;
+    pthread_mutex_unlock(&mutex_buffer);
+    for (int i = 0; i < cantidad; ++i) {
+        Mensaje *m = &buffer_escritura[i];
+        fprintf(f, "ID: %d | %s | %ld\n", m->id, m->contenido, m->timestamp);
+    }
+    fflush(f);
     fclose(f);
     return NULL;
 }
-
-// Hilo de limpieza que se activa cuando hay mensajes en la cola
-// y el offset mínimo de los grupos es mayor que el base_offset
-// Esto permite liberar espacio en la cola de mensajes
-// y evitar que se llene innecesariamente
 
 void* hilo_limpieza_func(void* arg) {
     while (!terminar) {
@@ -545,20 +532,35 @@ void* trabajador(void* arg) {
                 clock_gettime(CLOCK_REALTIME, &ts);
                 sumar_milisegundos(&ts, 200); // 200 ms
 
-                while (!terminar && sem_timedwait(&sem_espacios_libres, &ts) == -1 && errno == ETIMEDOUT) {
+                while (1) {
+                    struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
                     sumar_milisegundos(&ts, 200);
+
+                    if (terminar) break;
+                    if (sem_timedwait(&sem_espacios_libres, &ts) == -1) {
+                        if (errno == ETIMEDOUT) continue;
+                        else break;
+                    }
+
+                    pthread_mutex_lock(&mutex);
+                    int resultado_insercion = insertar_mensaje_con_retencion(cola, m);
+                    if (resultado_insercion == 0) {
+                        pthread_mutex_unlock(&mutex);
+                        sem_post(&sem_mensajes_disponibles);
+                        send(sock, "OK", 3, 0);
+                        break;
+                    } else {
+                        // No se pudo insertar por retención, liberar espacio y esperar señal
+                        sem_post(&sem_espacios_libres);
+                        // Esperar a que un consumidor libere espacio
+                        pthread_mutex_lock(&mutex_productores);
+                        pthread_mutex_unlock(&mutex);
+                        pthread_cond_wait(&cond_productores, &mutex_productores);
+                        pthread_mutex_unlock(&mutex_productores);
+                        continue;
+                    }
                 }
-                if (terminar) break;
-
-                pthread_mutex_lock(&mutex);
-                int resultado_insercion = insertar_mensaje_con_retencion(cola, m);
-                pthread_mutex_unlock(&mutex);
-
-                // Señala que hay un mensaje disponible
-                sem_post(&sem_mensajes_disponibles);
-
-                send(sock, (resultado_insercion == 0) ? "OK" : "LLENO", 6, 0);
 
                 // Persistencia (doble buffer)
                 agregar_a_persistencia(m);
@@ -613,9 +615,11 @@ void* trabajador(void* arg) {
                 if (r2 != sizeof(int)) goto desconectar;
 
                 int grupo_idx = pool->grupo_idx_cliente[i];
-                pthread_mutex_lock(&mutex_grupos);
                 GrupoConsumidor *grupo = &grupos[grupo_idx];
-                pthread_mutex_unlock(&mutex_grupos);
+
+                // --- PROTECCIÓN CONTRA DUPLICACIÓN ---
+                // Solo un consumidor del grupo puede consumir y avanzar el offset a la vez
+                pthread_mutex_lock(&grupo->mutex);
 
                 pthread_mutex_lock(&mutex);
                 int cantidad_en_cola = (cola->final - cola->frente + LONGITUD_MAXIMA_MENSAJES) % LONGITUD_MAXIMA_MENSAJES;
@@ -639,21 +643,23 @@ void* trabajador(void* arg) {
                     e.timestamp = time(NULL);
                     agregar_a_log_consumo(e);
 
-                    pthread_mutex_lock(&mutex_grupos);
-                    grupo->offset++; // <-- AVANZA SOLO EL OFFSET DE ESTE GRUPO
-                    pthread_mutex_unlock(&mutex_grupos);
+                    grupo->offset++; // Avanza el offset del grupo de forma segura
 
                     pthread_mutex_lock(&mutex_limpieza);
                     pthread_cond_signal(&cond_limpieza);
                     pthread_mutex_unlock(&mutex_limpieza);
 
                     sem_post(&sem_espacios_libres);
+                    pthread_mutex_lock(&mutex_productores);
+                    pthread_cond_signal(&cond_productores);
+                    pthread_mutex_unlock(&mutex_productores);
                 } else {
                     Mensaje vacio = {.id = -1};
                     strcpy(vacio.contenido, "VACIO");
                     vacio.timestamp = 0;
                     send(sock, &vacio, sizeof(Mensaje), 0);
                 }
+                pthread_mutex_unlock(&grupo->mutex);
 
                 continue;
             }
@@ -772,7 +778,7 @@ int main(int argc, char *argv[]) {
         close(servidor);
         exit(EXIT_FAILURE);
     }
-    if (listen(servidor, MAX_CONEXIONES) == -1) {
+    if (listen(servidor, SOMAXCONN) == -1) {
         perror("listen");
         close(servidor);
         exit(EXIT_FAILURE);
@@ -800,7 +806,8 @@ int main(int argc, char *argv[]) {
         snprintf(grupos[g].nombre, LONGITUD_NOMBRE_GRUPO, "grupo_%02d", g + 1);
         grupos[g].num_consumidores = 0;
         grupos[g].consumidores = NULL;
-        grupos[g].offset = 0; // <-- Asegúrate de que sea 0
+        grupos[g].offset = 0;
+        pthread_mutex_init(&grupos[g].mutex, NULL); // Inicializa el mutex por grupo
     }
 
     while (!stop_accept) {
@@ -810,7 +817,9 @@ int main(int argc, char *argv[]) {
             perror("accept");
             continue;
         }
-        printf("[BROKER] Nueva conexión aceptada, socket: %d\n", socket_cliente);
+        // Quitar mensajes de nueva conexión y pool/hilo
+        // printf("[BROKER] Nueva conexión aceptada, socket: %d\n", socket_cliente);
+        // printf("[BROKER] Nueva conexión aceptada: socket=%d asignado al pool/hilo %d\n", socket_cliente, min_idx);
         // Busca el hilo con menos sockets
         int min_idx = 0, min_cant = pool_sockets_array[0].cantidad_sockets;
         for (int i = 1; i < tamano_pool_hilos; ++i) {
@@ -836,20 +845,44 @@ int main(int argc, char *argv[]) {
         pool->grupo_idx_cliente[pool->cantidad_sockets] = -1;
         pool->id_consumidor_cliente[pool->cantidad_sockets] = -1;
         pool->cantidad_sockets++;
-        printf("[BROKER] Nueva conexión aceptada: socket=%d asignado al pool/hilo %d\n", socket_cliente, min_idx);
         pthread_mutex_unlock(&pool->mutex);
     }
 
     // tras salir del bucle de accept()
-    
-    // 1) Forzar volcado de buffers pendientes
-    flush_persistencia();
-    flush_log_consumo();
+
+    // 1) Forzar swap final del buffer de persistencia bajo mutex
+    pthread_mutex_lock(&mutex_buffer);
+    if (idx_escritura > 0) {
+        Mensaje *tmp = buffer_escritura;
+        buffer_escritura = buffer_lectura;
+        buffer_lectura = tmp;
+        idx_lectura = idx_escritura;
+        idx_escritura = 0;
+        pthread_cond_signal(&cond_buffer);
+    }
+    pthread_mutex_unlock(&mutex_buffer);
+
+    // 1b) Forzar swap final del buffer de log de consumo bajo mutex
+    pthread_mutex_lock(&mutex_log);
+    if (idx_log_escritura > 0) {
+        EventoConsumo *tmp = buffer_log_escritura;
+        buffer_log_escritura = buffer_log_lectura;
+        buffer_log_lectura = tmp;
+        idx_log_lectura = idx_log_escritura;
+        idx_log_escritura = 0;
+        pthread_cond_signal(&cond_log);
+    }
+    pthread_mutex_unlock(&mutex_log);
 
     // 2) Indicar a todos los hilos que terminen
     terminar = 1;
 
-    // Cierra todos los sockets de clientes para desbloquear cualquier recv() bloqueante
+    // 3) Despertar a los auxiliares bloqueados
+    pthread_cond_broadcast(&cond_buffer);
+    pthread_cond_broadcast(&cond_limpieza);
+    pthread_cond_broadcast(&cond_log);
+
+    // 4) Cierra todos los sockets de clientes para desbloquear cualquier recv() bloqueante
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         PoolSockets *pool = &pool_sockets_array[i];
         pthread_mutex_lock(&pool->mutex);
@@ -859,12 +892,7 @@ int main(int argc, char *argv[]) {
         pthread_mutex_unlock(&pool->mutex);
     }
 
-    // 3) Despertar a los auxiliares bloqueados
-    pthread_cond_broadcast(&cond_buffer);
-    pthread_cond_broadcast(&cond_limpieza);
-    pthread_cond_broadcast(&cond_log);
-
-    // 4) Esperar a que terminen workers y auxiliares
+    // 5) Esperar a que terminen workers y auxiliares
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         pthread_join(pool_hilos[i], NULL);
     }
@@ -873,7 +901,7 @@ int main(int argc, char *argv[]) {
     pthread_join(hilo_log_consumo, NULL);
     pthread_join(hilo_flush, NULL);
 
-    // 5) Cleanup final
+    // 6) Cleanup final
     sem_destroy(&sem_espacios_libres);
     sem_destroy(&sem_mensajes_disponibles);
     close(servidor);
