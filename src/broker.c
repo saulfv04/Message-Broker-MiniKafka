@@ -778,7 +778,9 @@ int main(int argc, char *argv[]) {
         close(servidor);
         exit(EXIT_FAILURE);
     }
+
     if (listen(servidor, SOMAXCONN) == -1) {
+
         perror("listen");
         close(servidor);
         exit(EXIT_FAILURE);
