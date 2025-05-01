@@ -23,6 +23,8 @@
 #include <sys/select.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <sys/resource.h>
+#include <poll.h>
 
 #define _XOPEN_SOURCE 700
 #define PUERTO 4444
@@ -30,10 +32,7 @@
 #define LONGITUD_MAXIMA_MENSAJES 1024
 #define NOMBRE_MEMORIA "/memoria_cola_mensajes"
 
-#define MAX_CONEXIONES 10
-#define MAX_CONSUMIDORES 32
 #define MAX_GRUPOS 50
-#define MAX_CONSUMIDORES_POR_GRUPO 16
 #define LONGITUD_NOMBRE_GRUPO 32
 #define MAX_CLIENTES_POR_HILO 32
 #define BUFFER_PERSISTENCIA 128
@@ -252,9 +251,9 @@ void limpiar_cola_si_es_posible(ColaMensajes *c) {
 // =======================
 void agregar_a_persistencia(Mensaje m) {
     pthread_mutex_lock(&mutex_buffer);
+    printf("[DEBUG] Mensaje aceptado para persistencia: ID=%d\n", m.id);
     buffer_escritura[idx_escritura++] = m;
-    if (idx_escritura == BUFFER_PERSISTENCIA ||
-        ((terminar || stop_accept) && idx_escritura > 0)) {
+    if (idx_escritura == BUFFER_PERSISTENCIA) {
         Mensaje *tmp = buffer_escritura;
         buffer_escritura = buffer_lectura;
         buffer_lectura = tmp;
@@ -419,28 +418,24 @@ void* trabajador(void* arg) {
 
     PoolSockets *pool = &pool_sockets_array[thread_index];
 
-    fd_set read_fds;
-    int maxfd;
+    struct pollfd *pfds = NULL;
+    int pfds_cap = 0;
 
     while (!terminar) {
-        FD_ZERO(&read_fds);
-        maxfd = -1;
-
         pthread_mutex_lock(&pool->mutex);
-        for (int i = 0; i < pool->cantidad_sockets; ++i) {
-            if (terminar) break; // <-- Agrega esto
-            int sock = pool->sockets[i];
-            FD_SET(sock, &read_fds);
-            if (pool->sockets[i] > maxfd) maxfd = pool->sockets[i];
-            if (terminar) break;
+        int n = pool->cantidad_sockets;
+        // Asegura capacidad del array pollfd
+        if (n > pfds_cap) {
+            pfds_cap = n * 2;
+            pfds = realloc(pfds, pfds_cap * sizeof(struct pollfd));
+        }
+        for (int i = 0; i < n; ++i) {
+            pfds[i].fd = pool->sockets[i];
+            pfds[i].events = POLLIN;
         }
         pthread_mutex_unlock(&pool->mutex);
 
-        struct timeval timeout;
-        timeout.tv_sec  = 0;
-        timeout.tv_usec = 10000;      // 10ms (ajusta a tu gusto)
-
-        int ready = select(maxfd + 1, &read_fds, NULL, NULL, &timeout);
+        int ready = poll(pfds, n, 10); // 10 ms timeout
         if (ready < 0) {
             if (errno == EINTR) {
                 if (terminar) break;
@@ -448,32 +443,23 @@ void* trabajador(void* arg) {
             }
             continue;
         }
+        if (ready == 0) continue; // Timeout
 
         pthread_mutex_lock(&pool->mutex);
-        for (int i = 0; i < pool->cantidad_sockets; ++i) {
+        for (int i = 0; i < n; ++i) {
+            if (!(pfds[i].revents & POLLIN)) continue;
             int sock = pool->sockets[i];
-            if (!FD_ISSET(sock, &read_fds)) continue;
 
             // Handshake inicial
             if (pool->estado_cliente[i] == 0) {
                 char tipo;
-                // Agrega select() antes de recv()
-                fd_set fds;
-                struct timeval tv;
-                FD_ZERO(&fds);
-                FD_SET(sock, &fds);
-                tv.tv_sec = 2;
-                tv.tv_usec = 0;
-
-                int ready = select(sock + 1, &fds, NULL, NULL, &tv);
-                if (ready < 0) continue;
-                if (ready == 0) continue; // Timeout, revisa terminar en el while
-
-                int r = recv(sock, &tipo, 1, 0);
-                if (r <= 0) goto desconectar;
+                int r = recv(sock, &tipo, 1, MSG_DONTWAIT);
+                if (r <= 0) {
+                    printf("[DEBUG] Socket %d desconectado antes de handshake (recv=%d, errno=%d)\n", sock, r, errno);
+                    goto desconectar;
+                }
                 pool->tipo_cliente[i] = tipo;
                 pool->estado_cliente[i] = 1;
-
                 if (tipo == 'C') {
                     // Asignar al grupo con menos consumidores
                     int grupo_idx = 0;
@@ -505,19 +491,7 @@ void* trabajador(void* arg) {
             // Productor
             if (pool->tipo_cliente[i] == 'P') {
                 Mensaje m;
-                fd_set fds;
-                struct timeval tv;
-                FD_ZERO(&fds);
-                FD_SET(sock, &fds);
-                tv.tv_sec = 0;
-                tv.tv_usec = 200000; // 200 ms
-
-                int ready = select(sock + 1, &fds, NULL, NULL, &tv);
-                if (ready < 0) continue;
-                if (ready == 0) continue; // Timeout, revisa terminar en el while
-
-                // Ahora sí, recv()
-                int r = recv(sock, &m, sizeof(Mensaje), 0);
+                int r = recv(sock, &m, sizeof(Mensaje), MSG_DONTWAIT);
                 if (r <= 0) goto desconectar;
 
                 // Guarda el socket del productor
@@ -548,7 +522,7 @@ void* trabajador(void* arg) {
                     if (resultado_insercion == 0) {
                         pthread_mutex_unlock(&mutex);
                         sem_post(&sem_mensajes_disponibles);
-                        send(sock, "OK", 3, 0);
+                        send(sock, "OK", 3, MSG_DONTWAIT);
                         break;
                     } else {
                         // No se pudo insertar por retención, liberar espacio y esperar señal
@@ -563,7 +537,10 @@ void* trabajador(void* arg) {
                 }
 
                 // Persistencia (doble buffer)
+                // Antes de agregar a persistencia
+                printf("[DEBUG] Worker va a persistir mensaje ID=%d\n", m.id);
                 agregar_a_persistencia(m);
+                printf("[DEBUG] Worker llamó a agregar_a_persistencia para ID=%d\n", m.id);
 
                 pthread_mutex_lock(&mutex_mensajes);
                 pthread_cond_broadcast(&cond_mensajes);
@@ -574,45 +551,63 @@ void* trabajador(void* arg) {
             // Consumidor
             if (pool->tipo_cliente[i] == 'C') {
                 // Espera petición del consumidor
-                fd_set fds;
-                struct timeval tv;
-                FD_ZERO(&fds);
-                FD_SET(sock, &fds);
-                tv.tv_sec = 0;
-                tv.tv_usec = 200000; // 200 ms
-
-                int ready = select(sock + 1, &fds, NULL, NULL, &tv);
-                if (ready < 0) continue;
-                if (ready == 0) continue; // Timeout, revisa terminar en el while
-
                 char peticion;
-                int r1 = recv(sock, &peticion, 1, 0);
-                if (r1 <= 0) goto desconectar;
-
-                while (peticion != 'R') {
-                    FD_ZERO(&fds);
-                    FD_SET(sock, &fds);
-                    tv.tv_sec = 0;
-                    tv.tv_usec = 200000;
-                    ready = select(sock + 1, &fds, NULL, NULL, &tv);
-                    if (ready < 0) continue;
-                    if (ready == 0) continue;
-                    r1 = recv(sock, &peticion, 1, 0);
-                    if (r1 <= 0) goto desconectar;
+                int r1 = recv(sock, &peticion, 1, MSG_DONTWAIT);
+                if (r1 == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    // No hay datos, sigue esperando
+                    continue;
+                }
+                if (r1 == 0) {
+                    printf("[DEBUG] Socket %d: consumidor cerró la conexión (recv=0)\n", sock);
+                    goto desconectar;
+                }
+                if (r1 < 0) {
+                    printf("[DEBUG] Socket %d: error en recv peticion (errno=%d: %s)\n", sock, errno, strerror(errno));
+                    goto desconectar;
                 }
 
-                // Espera el id_recv también con select()
-                FD_ZERO(&fds);
-                FD_SET(sock, &fds);
-                tv.tv_sec = 0;
-                tv.tv_usec = 200000;
-                ready = select(sock + 1, &fds, NULL, NULL, &tv);
-                if (ready < 0) continue;
-                if (ready == 0) continue;
+                while (peticion != 'R') {
+                    r1 = recv(sock, &peticion, 1, MSG_DONTWAIT);
+                    if (r1 == 0) {
+                        printf("[DEBUG] Socket %d: consumidor cerró la conexión en espera de 'R' (recv=0)\n", sock);
+                        goto desconectar;
+                    }
+                    if (r1 < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // No hay datos aún, espera al siguiente ciclo de poll
+                            break;
+                        }
+                        printf("[DEBUG] Socket %d: error en recv esperando 'R' (errno=%d: %s)\n", sock, errno, strerror(errno));
+                        goto desconectar;
+                    }
+                }
+                if (peticion != 'R') {
+                    // No se recibió el 'R' completo, espera al siguiente ciclo
+                    continue;
+                }
 
-                int id_recv;
-                int r2 = recv(sock, &id_recv, sizeof(int), 0);
-                if (r2 != sizeof(int)) goto desconectar;
+                int id_recv = 0;
+                int total = 0;
+                while (total < sizeof(int)) {
+                    int r2 = recv(sock, ((char*)&id_recv) + total, sizeof(int) - total, MSG_DONTWAIT);
+                    if (r2 == 0) {
+                        printf("[DEBUG] Socket %d: consumidor cerró la conexión al enviar id (recv=0)\n", sock);
+                        goto desconectar;
+                    }
+                    if (r2 < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // No hay datos aún, espera al siguiente ciclo de poll
+                            break;
+                        }
+                        printf("[DEBUG] Socket %d: error en recv id consumidor (errno=%d: %s)\n", sock, errno, strerror(errno));
+                        goto desconectar;
+                    }
+                    total += r2;
+                }
+                if (total < sizeof(int)) {
+                    // No se recibió el ID completo, espera al siguiente ciclo
+                    continue;
+                }
 
                 int grupo_idx = pool->grupo_idx_cliente[i];
                 GrupoConsumidor *grupo = &grupos[grupo_idx];
@@ -633,7 +628,7 @@ void* trabajador(void* arg) {
                 pthread_mutex_unlock(&mutex);
 
                 if (hay_mensaje) {
-                    send(sock, &m, sizeof(Mensaje), 0);
+                    send(sock, &m, sizeof(Mensaje), MSG_DONTWAIT);
 
                     EventoConsumo e;
                     e.mensaje_id = m.id;
@@ -657,7 +652,7 @@ void* trabajador(void* arg) {
                     Mensaje vacio = {.id = -1};
                     strcpy(vacio.contenido, "VACIO");
                     vacio.timestamp = 0;
-                    send(sock, &vacio, sizeof(Mensaje), 0);
+                    send(sock, &vacio, sizeof(Mensaje), MSG_DONTWAIT);
                 }
                 pthread_mutex_unlock(&grupo->mutex);
 
@@ -665,7 +660,6 @@ void* trabajador(void* arg) {
             }
 
         desconectar:
-            printf("[BROKER] Cliente desconectado: socket=%d\n", sock);
             // Si era consumidor, eliminar solo el consumidor correspondiente del grupo
             if (pool->tipo_cliente[i] == 'C') {
                 int grupo_idx = pool->grupo_idx_cliente[i];
@@ -688,6 +682,7 @@ void* trabajador(void* arg) {
                     pthread_mutex_unlock(&mutex_grupos);
                 }
             }
+            printf("[DEBUG] Socket %d desconectado (tipo=%c)\n", sock, pool->tipo_cliente[i]);
             close(sock);
             // Mueve el último cliente al hueco y reduce cantidad_sockets
             int last = pool->cantidad_sockets - 1;
@@ -697,12 +692,15 @@ void* trabajador(void* arg) {
                 pool->estado_cliente[i] = pool->estado_cliente[last];
                 pool->grupo_idx_cliente[i] = pool->grupo_idx_cliente[last];
                 pool->id_consumidor_cliente[i] = pool->id_consumidor_cliente[last];
+                pfds[i] = pfds[last];
             }
             pool->cantidad_sockets--;
-            i--; // para no saltar el nuevo elemento en la posición i
+            n--;
+            i--;
         }
         pthread_mutex_unlock(&pool->mutex);
     }
+    free(pfds);
     printf("Hilo worker %d terminando\n", thread_index);
     return NULL;
 }
@@ -812,6 +810,10 @@ int main(int argc, char *argv[]) {
         pthread_mutex_init(&grupos[g].mutex, NULL); // Inicializa el mutex por grupo
     }
 
+    struct rlimit lim;
+    getrlimit(RLIMIT_NOFILE, &lim);
+    printf("[BROKER] RLIMIT_NOFILE: soft=%ld hard=%ld\n", lim.rlim_cur, lim.rlim_max);
+
     while (!stop_accept) {
         int socket_cliente = accept(servidor, NULL, NULL);
         if (stop_accept) break;
@@ -819,6 +821,7 @@ int main(int argc, char *argv[]) {
             perror("accept");
             continue;
         }
+        printf("[DEBUG] Socket aceptado: %d\n", socket_cliente);
         // Quitar mensajes de nueva conexión y pool/hilo
         // printf("[BROKER] Nueva conexión aceptada, socket: %d\n", socket_cliente);
         // printf("[BROKER] Nueva conexión aceptada: socket=%d asignado al pool/hilo %d\n", socket_cliente, min_idx);
@@ -840,6 +843,7 @@ int main(int argc, char *argv[]) {
             pool->grupo_idx_cliente = realloc(pool->grupo_idx_cliente, nueva_cap * sizeof(int));
             pool->id_consumidor_cliente = realloc(pool->id_consumidor_cliente, nueva_cap * sizeof(int));
             pool->capacidad = nueva_cap;
+            printf("[DEBUG] Pool %d: realloc a capacidad %d\n", min_idx, nueva_cap);
         }
         pool->sockets[pool->cantidad_sockets] = socket_cliente;
         pool->tipo_cliente[pool->cantidad_sockets] = 0;
@@ -912,6 +916,24 @@ int main(int argc, char *argv[]) {
     shm_unlink(NOMBRE_MEMORIA);
     free(pool_hilos);
     for (int g = 0; g < num_grupos; ++g) liberar_consumidores(grupos[g].consumidores);
+    
+    // Reporte de sockets huérfanos (sin handshake)
+    int huerfanos = 0, consumidores_huerfanos = 0;
+    for (int i = 0; i < tamano_pool_hilos; ++i) {
+        PoolSockets *pool = &pool_sockets_array[i];
+        pthread_mutex_lock(&pool->mutex);
+        for (int j = 0; j < pool->cantidad_sockets; ++j) {
+            if (pool->estado_cliente[j] == 0) {
+                huerfanos++;
+                if (pool->tipo_cliente[j] == 'C')
+                    consumidores_huerfanos++;
+            }
+        }
+        pthread_mutex_unlock(&pool->mutex);
+    }
+    printf("[INFO] Sockets huérfanos (sin handshake): %d (de ellos consumidores: %d)\n", huerfanos, consumidores_huerfanos);
+
+    // Ahora sí, libera la memoria
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         free(pool_sockets_array[i].sockets);
         free(pool_sockets_array[i].tipo_cliente);
