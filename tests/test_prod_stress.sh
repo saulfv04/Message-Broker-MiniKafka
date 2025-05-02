@@ -1,17 +1,20 @@
 #!/bin/bash
 
-BROKER_HOST=127.0.0.1
-BROKER_PORT=4444
-NUM_PROD=1000       # Número de productores simultáneos
+NUM_PROD=5000
+BATCH=5000
 
-mkdir -p tests/logs_test_prod_stress
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR/.."
+PRODUCER_BIN="$PROJECT_ROOT/src/producer"
 
-echo "Iniciando $NUM_PROD productores en paralelo..."
+echo "Iniciando $NUM_PROD productores en lotes de $BATCH..."
 
-for ((i=1; i<=NUM_PROD; i++)); do
-    ./src/producer > tests/logs_test_prod_stress/prod_$i.log 2>&1 &
+i=1
+while [ $i -le $NUM_PROD ]; do
+    for ((j=0; j<BATCH && i<=NUM_PROD; j++, i++)); do
+        "$PRODUCER_BIN" > /dev/null 2>&1 &
+    done
+    wait
 done
-
-wait
 
 echo "Test de productores masivos terminado."

@@ -62,10 +62,6 @@ int main() {
     char tipo = 'C';
     send(socket_cliente, &tipo, 1, 0);
 
-    // Usar grupo fijo (puedes cambiar el nombre si quieres)
-    char nombre_grupo[LONGITUD_NOMBRE_GRUPO] = "grupo_auto";
-    send(socket_cliente, nombre_grupo, LONGITUD_NOMBRE_GRUPO, 0);
-
     // Recibir el id asignado por el broker
     int id_consumidor;
     int bytes = recv(socket_cliente, &id_consumidor, sizeof(int), 0);
@@ -82,6 +78,7 @@ int main() {
 
     int contador_mensajes = 0;
     while (!terminar) {
+        printf("Pidiendo mensaje...\n");
         char peticion = 'R';
         send(socket_cliente, &peticion, 1, 0);
         send(socket_cliente, &id_consumidor, sizeof(int), 0);
@@ -105,6 +102,7 @@ int main() {
 
         if (FD_ISSET(socket_cliente, &readfds)) {
             int bytes_recibidos = recv(socket_cliente, buffer, sizeof(buffer) - 1, 0);
+            printf("Bytes recibidos: %d\n", bytes_recibidos);
 
             if (bytes_recibidos > 0) {
                 Mensaje *msg = (Mensaje*)buffer;

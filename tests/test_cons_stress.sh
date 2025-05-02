@@ -1,13 +1,20 @@
 #!/bin/bash
 
-NUM_CONS=1000         # Número de consumidores simultáneos
+NUM_CONS=5000
+BATCH=1000
 
-mkdir -p tests/logs_test_cons_stress
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR/.."
+CONSUMER_BIN="$PROJECT_ROOT/src/consumer"
 
-echo "Iniciando $NUM_CONS consumidores en paralelo..."
+echo "Iniciando $NUM_CONS consumidores en lotes de $BATCH..."
 
-for ((i=1; i<=NUM_CONS; i++)); do
-    ./src/consumer > tests/logs_test_cons_stress/cons_$i.log 2>&1 &
+i=1
+while [ $i -le $NUM_CONS ]; do
+    for ((j=0; j<BATCH && i<=NUM_CONS; j++, i++)); do
+        "$CONSUMER_BIN" > /dev/null 2>&1 &
+    done
+    sleep 0.2  # Espera 200ms entre lotes (ajusta si quieres)
 done
 
 wait
