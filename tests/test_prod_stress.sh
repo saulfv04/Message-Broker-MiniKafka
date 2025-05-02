@@ -1,7 +1,7 @@
 #!/bin/bash
 
-NUM_PROD=2000
-BATCH=2000
+NUM_PROD=5000
+BATCH=5000
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR/.."

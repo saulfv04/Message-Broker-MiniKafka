@@ -23,6 +23,7 @@
 #include <sys/select.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <sys/resource.h>
 #include <poll.h>
 
@@ -143,7 +144,7 @@ pthread_mutex_t mutex_log = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond_log = PTHREAD_COND_INITIALIZER;
 
 // Variable global para terminar
-volatile sig_atomic_t stop_accept = 0;
+atomic_int stop_accept = 0;
 volatile sig_atomic_t terminar = 0;
 
 // Declarar 'servidor' como variable global para acceso en el handler
@@ -152,13 +153,20 @@ int servidor = -1;
 // Manejador de señales
 void handler(int sig) {
     printf("Recibida señal %d, deteniendo accept()\n", sig);
-    stop_accept = 1;
+    atomic_store(&stop_accept, 1);
     if (servidor != -1) close(servidor);
 
-    // Despertar hilos auxiliares inmediatamente
+    pthread_mutex_lock(&mutex_buffer);
     pthread_cond_broadcast(&cond_buffer);
+    pthread_mutex_unlock(&mutex_buffer);
+
+    pthread_mutex_lock(&mutex_limpieza);
     pthread_cond_broadcast(&cond_limpieza);
+    pthread_mutex_unlock(&mutex_limpieza);
+
+    pthread_mutex_lock(&mutex_log);
     pthread_cond_broadcast(&cond_log);
+    pthread_mutex_unlock(&mutex_log);
 }
 
 // =======================
@@ -253,7 +261,8 @@ void agregar_a_persistencia(Mensaje m) {
     pthread_mutex_lock(&mutex_buffer);
     printf("[DEBUG] Mensaje aceptado para persistencia: ID=%d\n", m.id);
     buffer_escritura[idx_escritura++] = m;
-    if (idx_escritura == BUFFER_PERSISTENCIA) {
+    if (idx_escritura == BUFFER_PERSISTENCIA ||
+        ((terminar || atomic_load(&stop_accept)) && idx_escritura > 0)) {
         Mensaje *tmp = buffer_escritura;
         buffer_escritura = buffer_lectura;
         buffer_lectura = tmp;
@@ -438,7 +447,7 @@ void* trabajador(void* arg) {
         int ready = poll(pfds, n, 10); // 10 ms timeout
         if (ready < 0) {
             if (errno == EINTR) {
-                if (terminar) break;
+                if (atomic_load(&stop_accept)) break;
                 else continue;
             }
             continue;
@@ -511,7 +520,7 @@ void* trabajador(void* arg) {
                     clock_gettime(CLOCK_REALTIME, &ts);
                     sumar_milisegundos(&ts, 200);
 
-                    if (terminar) break;
+                    if (atomic_load(&stop_accept)) break;
                     if (sem_timedwait(&sem_espacios_libres, &ts) == -1) {
                         if (errno == ETIMEDOUT) continue;
                         else break;
@@ -585,6 +594,7 @@ void* trabajador(void* arg) {
                     // No se recibió el 'R' completo, espera al siguiente ciclo
                     continue;
                 }
+
 
                 int id_recv = 0;
                 int total = 0;
@@ -814,9 +824,9 @@ int main(int argc, char *argv[]) {
     getrlimit(RLIMIT_NOFILE, &lim);
     printf("[BROKER] RLIMIT_NOFILE: soft=%ld hard=%ld\n", lim.rlim_cur, lim.rlim_max);
 
-    while (!stop_accept) {
+    while (!atomic_load(&stop_accept)) {
         int socket_cliente = accept(servidor, NULL, NULL);
-        if (stop_accept) break;
+        if (atomic_load(&stop_accept)) break;
         if (socket_cliente < 0) {
             perror("accept");
             continue;
@@ -915,7 +925,10 @@ int main(int argc, char *argv[]) {
     close(shm_fd);
     shm_unlink(NOMBRE_MEMORIA);
     free(pool_hilos);
-    for (int g = 0; g < num_grupos; ++g) liberar_consumidores(grupos[g].consumidores);
+    for (int g = 0; g < num_grupos; ++g){
+        liberar_consumidores(grupos[g].consumidores);
+        pthread_mutex_destroy(&grupos[g].mutex);
+    }
     
     // Reporte de sockets huérfanos (sin handshake)
     int huerfanos = 0, consumidores_huerfanos = 0;
@@ -942,6 +955,19 @@ int main(int argc, char *argv[]) {
         free(pool_sockets_array[i].id_consumidor_cliente);
     }
     free(pool_sockets_array);
+
+    pthread_mutex_destroy(&mutex);
+    pthread_mutex_destroy(&mutex_grupos);
+    pthread_mutex_destroy(&mutex_limpieza);
+    pthread_mutex_destroy(&mutex_mensajes);
+    pthread_mutex_destroy(&mutex_buffer);
+    pthread_mutex_destroy(&mutex_log);
+    pthread_mutex_destroy(&mutex_id);
+
+    pthread_cond_destroy(&cond_limpieza);
+    pthread_cond_destroy(&cond_mensajes);
+    pthread_cond_destroy(&cond_buffer);
+    pthread_cond_destroy(&cond_log);
 
     return 0;
 }
