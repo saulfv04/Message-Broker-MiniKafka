@@ -5,21 +5,22 @@ Este proyecto implementa un sistema de mensajería distribuido inspirado en Apac
 ## 🧱 Arquitectura General
 
 - **Productores:** Generan mensajes y los envían al broker a través de sockets TCP.
-- **Broker:** Administra la cola de mensajes en memoria compartida, gestiona conexiones y persistencia, y reparte los mensajes.
-- **Consumidores:** Solicitan mensajes al broker. Pueden operar de forma independiente o en **grupos**, donde los mensajes se reparten con un algoritmo Round-Robin.
-- **Persistencia:** Un hilo especial del broker escribe los mensajes en un log (`log_mensajes.txt`) de forma asíncrona.
+- **Broker:** Proceso servidor que recibe conexiones de productores y consumidores, mantiene una cola de mensajes en memoria compartida, gestiona los offsets de lectura, realiza persistencia en disco y registra eventos de consumo.
+- **Consumidores:** Clientes que solicitan mensajes al broker y los reciben uno a la vez. Pueden operar de forma independiente o agruparse para balancear el consumo mediante round-robin.
+- **Persistencia:** Los mensajes se almacenan en un archivo de texto (persistencia_mensajes.txt) utilizando buffers dobles para escritura asíncrona y eficiente.
+- **Log de Consumo:**  Cada vez que un consumidor recibe un mensaje, se registra el evento con detalles como el grupo, el consumidor y la hora en log_consumo.txt.
 - **Limpieza:** Un hilo limpia mensajes ya leídos por todos los consumidores para evitar saturación de la cola.
 
 ## 📁 Estructura del Proyecto
 
 ```
 /project-root
-│── src/
-│   ├── broker.c         # Lógica del broker
-│   ├── producer.c       # Cliente productor
-│   ├── consumer.c       # Cliente consumidor
-│── README.md            # Este archivo
-│── Makefile             # Compilación
+├── src/
+│   ├── broker.c         # Lógica del broker (multithreading, socket, sincronización)
+│   ├── producer.c       # Cliente productor (envía mensajes al broker)
+│   ├── consumer.c       # Cliente consumidor (solicita mensajes al broker)
+├── Makefile             # Script de compilación
+├── README.md            # Documentación del sistema
 ```
 
 ## ⚙️ Instrucciones de Compilación y Ejecución
@@ -52,21 +53,51 @@ Este proyecto implementa un sistema de mensajería distribuido inspirado en Apac
 - El acceso a estructuras globales como la cola de persistencia y los offsets también está sincronizado.
 - Los mutexes están configurados para ser compartidos entre procesos (`PTHREAD_PROCESS_SHARED`), lo que facilita futuras extensiones.
 - La comunicación entre hilos del broker (e.g., persistencia y limpieza) se realiza mediante **condiciones (`pthread_cond_t`)** para evitar espera activa.
+- Se emplean semáforos para bloquear productores cuando la cola está llena y para notificar consumidores cuando hay mensajes nuevos disponibles.
 
 ## 🔁 Flujo del Sistema
 
-1. Productor se conecta → Envía mensaje al broker.
-2. Broker guarda en cola (memoria compartida) → También encola para persistencia.
-3. Hilo de persistencia lo guarda en archivo.
-4. Consumidor se conecta → Solicita mensaje → Broker responde según su offset.
-5. Offset se actualiza → Se dispara limpieza si todos los consumidores han leído.
-6. En modo grupo: Round-robin garantiza balanceo de carga.
+1. Un productor se conecta al broker y envía un mensaje.
+2. El broker almacena el mensaje en una cola circular de memoria compartida.
+3. El mensaje también se coloca en un buffer de persistencia, que es escrito de forma asíncrona al archivo persistencia_mensajes.txt por un hilo dedicado.
+4. Un consumidor solicita un mensaje y el broker le responde con el siguiente mensaje según el offset del grupo al que pertenece.
+5. Se registra un evento en el buffer de log de consumo, que luego es volcado al archivo log_consumo.txt.
+6. Si todos los grupos han leído un mensaje, este se elimina de la cola para liberar espacio.
 
 ## 👥 Soporte de Grupos de Consumidores
 
 - Cada grupo tiene un nombre, un offset global y una lista de consumidores activos.
 - El broker asigna mensajes a los consumidores en orden round-robin.
 - El offset de grupo avanza solo cuando el mensaje ha sido leído por el consumidor correspondiente.
+
+## 💾 Mecanismo de Persistencia y Logs
+
+## Persistencia de Mensajes
+
+El broker utiliza dos buffers (buffer_a y buffer_b) que se alternan para almacenar mensajes antes de escribirlos en disco.
+
+Cuando un buffer se llena o después de un intervalo periódico, los buffers se intercambian y el hilo de persistencia escribe el contenido en persistencia_mensajes.txt.
+
+Este diseño evita bloqueos entre los hilos productores y el hilo que escribe a disco.
+
+## Log de Consumo
+
+Cada vez que un consumidor recibe un mensaje, se crea un registro que incluye:
+- ID del mensaje
+- Socket del productor original
+- Nombre del grupo
+- ID del consumidor
+- Timestamp de lectura
+
+Al igual que la persistencia, se usan buffers dobles para registrar estos eventos de forma asíncrona y eficiente.
+El archivo resultante es log_consumo.txt, que sirve para auditoría y análisis del sistema.
+
+##  👥 Gestión de Grupos de Consumidores
+
+Al conectarse, un consumidor es automáticamente asignado al grupo con menos carga (menos consumidores).
+Cada grupo mantiene su propio offset global, el cual avanza solo cuando uno de sus consumidores ha leído exitosamente un mensaje.
+Los mensajes se distribuyen de manera balanceada entre los consumidores del grupo usando round-robin.
+Se previene que múltiples consumidores lean el mismo mensaje gracias a la sincronización con mutex por grupo.
 
 ## 🧪 Pruebas Implementadas
 
@@ -80,9 +111,4 @@ Este proyecto implementa un sistema de mensajería distribuido inspirado en Apac
 - No hay autenticación de clientes.
 - Las conexiones se asumen como locales; no se ha probado en red distribuida real.
 
-## 🧹 Posibles Mejoras
 
-- Implementar mecanismo de recuperación de mensajes desde log.
-- Mejorar tolerancia a fallos (heartbeat, reintentos).
-- Añadir interfaz de monitoreo.
-- Extender para que productores/consumidores puedan correr en máquinas distintas.
