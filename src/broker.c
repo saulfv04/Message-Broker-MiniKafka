@@ -79,8 +79,8 @@ typedef struct {
     char nombre[LONGITUD_NOMBRE_GRUPO];
     ConsumidorNodo* consumidores;
     int num_consumidores;
-    int offset; // Offset de grupo (absoluto)
-    pthread_mutex_t mutex; // Mutex específico para este grupo
+    atomic_int offset; // <-- CAMBIA a atómico
+    pthread_mutex_t mutex;
 } GrupoConsumidor;
 
 typedef struct {
@@ -221,13 +221,12 @@ int consumir_mensaje(ColaMensajes *c, Mensaje *m) {
 // =======================
 int obtener_offset_minimo_grupos() {
     int min_offset = INT_MAX;
-    pthread_mutex_lock(&mutex_grupos);
     for (int i = 0; i < num_grupos; ++i) {
-        if (grupos[i].offset < min_offset) {
-            min_offset = grupos[i].offset;
+        int val = atomic_load(&grupos[i].offset);
+        if (val < min_offset) {
+            min_offset = val;
         }
     }
-    pthread_mutex_unlock(&mutex_grupos);
     return min_offset;
 }
 
@@ -628,11 +627,11 @@ void* trabajador(void* arg) {
 
                 pthread_mutex_lock(&mutex);
                 int cantidad_en_cola = (cola->final - cola->frente + LONGITUD_MAXIMA_MENSAJES) % LONGITUD_MAXIMA_MENSAJES;
-                int hay_mensaje = grupo->offset >= cola->base_offset && grupo->offset < cola->base_offset + cantidad_en_cola;
+                int hay_mensaje = atomic_load(&grupo->offset) >= cola->base_offset && atomic_load(&grupo->offset) < cola->base_offset + cantidad_en_cola;
                 int idxmsg = -1;
                 Mensaje m;
                 if (hay_mensaje) {
-                    idxmsg = (cola->frente + (grupo->offset - cola->base_offset)) % LONGITUD_MAXIMA_MENSAJES;
+                    idxmsg = (cola->frente + (atomic_load(&grupo->offset) - cola->base_offset)) % LONGITUD_MAXIMA_MENSAJES;
                     m = cola->mensajes[idxmsg];
                 }
                 pthread_mutex_unlock(&mutex);
@@ -648,7 +647,7 @@ void* trabajador(void* arg) {
                     e.timestamp = time(NULL);
                     agregar_a_log_consumo(e);
 
-                    grupo->offset++; // Avanza el offset del grupo de forma segura
+                    atomic_fetch_add(&grupo->offset, 1);
 
                     pthread_mutex_lock(&mutex_limpieza);
                     pthread_cond_signal(&cond_limpieza);
@@ -816,7 +815,7 @@ int main(int argc, char *argv[]) {
         snprintf(grupos[g].nombre, LONGITUD_NOMBRE_GRUPO, "grupo_%02d", g + 1);
         grupos[g].num_consumidores = 0;
         grupos[g].consumidores = NULL;
-        grupos[g].offset = 0;
+        atomic_store(&grupos[g].offset, 0);
         pthread_mutex_init(&grupos[g].mutex, NULL); // Inicializa el mutex por grupo
     }
 
@@ -934,7 +933,7 @@ int main(int argc, char *argv[]) {
     int huerfanos = 0, consumidores_huerfanos = 0;
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         PoolSockets *pool = &pool_sockets_array[i];
-        pthread_mutex_lock(&pool->mutex);
+        pthread_mutex_lock(&pool->mutex); // <-- PROTEGE ACCESO
         for (int j = 0; j < pool->cantidad_sockets; ++j) {
             if (pool->estado_cliente[j] == 0) {
                 huerfanos++;
@@ -942,17 +941,17 @@ int main(int argc, char *argv[]) {
                     consumidores_huerfanos++;
             }
         }
-        pthread_mutex_unlock(&pool->mutex);
+        pthread_mutex_unlock(&pool->mutex); // <-- DESBLOQUEA
     }
     printf("[INFO] Sockets huérfanos (sin handshake): %d (de ellos consumidores: %d)\n", huerfanos, consumidores_huerfanos);
 
     // Ahora sí, libera la memoria
-    for (int i = 0; i < tamano_pool_hilos; ++i) {
+    for (int i = 0; i < tamano_pool_hilos; ++i) { // <-- PROTEGE ACCESO
         free(pool_sockets_array[i].sockets);
         free(pool_sockets_array[i].tipo_cliente);
         free(pool_sockets_array[i].estado_cliente);
         free(pool_sockets_array[i].grupo_idx_cliente);
-        free(pool_sockets_array[i].id_consumidor_cliente);
+        free(pool_sockets_array[i].id_consumidor_cliente); // <-- DESTRUYE DESPUÉS DE USAR
     }
     free(pool_sockets_array);
 
