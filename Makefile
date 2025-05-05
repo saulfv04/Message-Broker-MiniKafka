@@ -1,9 +1,9 @@
 CC=gcc
-CFLAGS=-Wall -Wextra -g -lpthread 
-LDFLAGS=-pthread 
+CFLAGS=-g -lpthread 
+ 
 
 SRC_DIR=src
-BIN_DIR=bin
+BIN_DIR=$(SRC_DIR)
 
 BROKER_SRC=$(SRC_DIR)/broker.c
 PRODUCER_SRC=$(SRC_DIR)/producer.c
@@ -13,22 +13,18 @@ BROKER_BIN=$(BIN_DIR)/broker
 PRODUCER_BIN=$(BIN_DIR)/producer
 CONSUMER_BIN=$(BIN_DIR)/consumer
 
-all: $(BIN_DIR) $(BROKER_BIN) $(PRODUCER_BIN) $(CONSUMER_BIN)
-
-$(BIN_DIR):
-	@mkdir -p $(BIN_DIR)
+all:  $(BROKER_BIN) $(PRODUCER_BIN) $(CONSUMER_BIN)
 
 $(BROKER_BIN): $(BROKER_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $<
 
 $(PRODUCER_BIN): $(PRODUCER_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< 
 
 $(CONSUMER_BIN): $(CONSUMER_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< 
 
-run-broker: $(BROKER_BIN)
-	$(BROKER_BIN)
+
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -f $(SRC_DIR)/broker $(SRC_DIR)/producer $(SRC_DIR)/consumer
