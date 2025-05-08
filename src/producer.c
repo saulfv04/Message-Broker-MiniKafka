@@ -1,4 +1,4 @@
-// producer.c (modificado)
+// producer.c
 // - Contenido de mensaje leído de stdin
 // - Termina cuando el usuario escribe 'salir'
 

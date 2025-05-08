@@ -168,9 +168,7 @@ void handler(int sig) {
     pthread_mutex_unlock(&mutex_log);
 }
 
-// =======================
-//  PROTOTIPOS
-// =======================
+
 void limpiar_cola_si_es_posible(ColaMensajes *c);
 void liberar_consumidores(ConsumidorNodo* cabeza);
 
@@ -351,7 +349,7 @@ void* hilo_persistencia_func(void* arg) {
         }
         fflush(f);
 
-        // Si terminar está activo y no quedan pendientes, salimos
+       
         pthread_mutex_lock(&mutex_buffer);
         int quedan_pendientes = (idx_lectura > 0 || idx_escritura > 0);
         int fin = terminar && !quedan_pendientes;
@@ -431,7 +429,6 @@ void* trabajador(void* arg) {
     while (!terminar) {
         pthread_mutex_lock(&pool->mutex);
         int n = pool->cantidad_sockets;
-        // Asegura capacidad del array pollfd
         if (n > pfds_cap) {
             pfds_cap = n * 2;
             pfds = realloc(pfds, pfds_cap * sizeof(struct pollfd));
@@ -442,7 +439,7 @@ void* trabajador(void* arg) {
         }
         pthread_mutex_unlock(&pool->mutex);
 
-        int ready = poll(pfds, n, 10); // 10 ms timeout
+        int ready = poll(pfds, n, 10); 
         if (ready < 0) {
             if (errno == EINTR) {
                 if (atomic_load(&stop_accept)) break;
@@ -450,7 +447,7 @@ void* trabajador(void* arg) {
             }
             continue;
         }
-        if (ready == 0) continue; // Timeout
+        if (ready == 0) continue;
 
         pthread_mutex_lock(&pool->mutex);
         for (int i = 0; i < n; ++i) {

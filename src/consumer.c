@@ -1,4 +1,4 @@
-// consumer.c (modificado)
+// consumer.c
 // - Lee todos los mensajes disponibles hasta que la cola está vacía
 // - Muestra cada mensaje recibido
 
