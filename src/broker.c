@@ -39,7 +39,7 @@
 #define BUFFER_PERSISTENCIA 128
 #define BUFFER_LOG_CONSUMO 128
 
-// --- Agrega esto después de los includes ---
+
 void sumar_milisegundos(struct timespec *ts, int ms) {
     ts->tv_sec += ms / 1000;
     ts->tv_nsec += (ms % 1000) * 1000000;
@@ -56,7 +56,7 @@ typedef struct {
     int id;
     char contenido[LONGITUD_MAXIMA_MENSAJE];
     time_t timestamp;
-    int productor_socket; // Nuevo campo: socket del productor
+    int productor_socket; 
 } Mensaje;
 
 typedef struct {
@@ -72,25 +72,23 @@ typedef struct ConsumidorNodo {
     struct ConsumidorNodo* siguiente;
 } ConsumidorNodo;
 
-// --- PROBLEMA DE DUPLICACIÓN ---
-// Si varios consumidores del mismo grupo consumen a la vez, pueden leer el mismo mensaje antes de que el offset avance.
-// SOLUCIÓN: Añadimos un mutex por grupo para proteger la lógica de consumo y evitar duplicados.
+
 typedef struct {
     char nombre[LONGITUD_NOMBRE_GRUPO];
     ConsumidorNodo* consumidores;
     int num_consumidores;
-    atomic_int offset; // <-- CAMBIA a atómico
+    atomic_int offset;
     pthread_mutex_t mutex;
 } GrupoConsumidor;
 
 typedef struct {
     int *sockets;
-    char *tipo_cliente; // 'P' o 'C'
-    int *estado_cliente; // 0: handshake, 1: listo
+    char *tipo_cliente; 
+    int *estado_cliente; 
     int *grupo_idx_cliente;
     int *id_consumidor_cliente;
     int cantidad_sockets;
-    int capacidad; // capacidad actual del array
+    int capacidad; 
     pthread_mutex_t mutex;
 } PoolSockets;
 
@@ -135,6 +133,7 @@ int idx_escritura = 0, idx_lectura = 0;
 pthread_mutex_t mutex_buffer = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond_buffer = PTHREAD_COND_INITIALIZER;
 
+//Buffers de persistencia
 EventoConsumo buffer_log_a[BUFFER_LOG_CONSUMO];
 EventoConsumo buffer_log_b[BUFFER_LOG_CONSUMO];
 EventoConsumo *buffer_log_escritura = buffer_log_a;
@@ -324,7 +323,7 @@ void flush_log_consumo() {
 
 void* hilo_flush_periodico(void* arg) {
     while (!terminar) {
-        sleep(5); // cada 5 segundos
+        sleep(5);
         flush_persistencia();
         flush_log_consumo();
     }
@@ -487,7 +486,7 @@ void* trabajador(void* arg) {
                     pool->id_consumidor_cliente[i] = cid;
                     send(sock, &cid, sizeof(int), 0);
 
-                    // DEBUG: Mostrar a qué grupo se asignó el consumidor
+                
                     printf("[DEBUG] Consumidor %d asignado al grupo '%s' (grupo_idx=%d)\n", cid, grupos[grupo_idx].nombre, grupo_idx);
 
                     pthread_mutex_unlock(&mutex_grupos);
@@ -799,7 +798,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         pthread_mutex_init(&pool_sockets_array[i].mutex, NULL);
         pool_sockets_array[i].cantidad_sockets = 0;
-        pool_sockets_array[i].capacidad = 32; // capacidad inicial
+        pool_sockets_array[i].capacidad = 32;
         pool_sockets_array[i].sockets = malloc(pool_sockets_array[i].capacidad * sizeof(int));
         pool_sockets_array[i].tipo_cliente = malloc(pool_sockets_array[i].capacidad * sizeof(char));
         pool_sockets_array[i].estado_cliente = malloc(pool_sockets_array[i].capacidad * sizeof(int));
@@ -816,7 +815,7 @@ int main(int argc, char *argv[]) {
         grupos[g].num_consumidores = 0;
         grupos[g].consumidores = NULL;
         atomic_store(&grupos[g].offset, 0);
-        pthread_mutex_init(&grupos[g].mutex, NULL); // Inicializa el mutex por grupo
+        pthread_mutex_init(&grupos[g].mutex, NULL);
     }
 
     struct rlimit lim;
@@ -831,10 +830,6 @@ int main(int argc, char *argv[]) {
             continue;
         }
         printf("[DEBUG] Socket aceptado: %d\n", socket_cliente);
-        // Quitar mensajes de nueva conexión y pool/hilo
-        // printf("[BROKER] Nueva conexión aceptada, socket: %d\n", socket_cliente);
-        // printf("[BROKER] Nueva conexión aceptada: socket=%d asignado al pool/hilo %d\n", socket_cliente, min_idx);
-        // Busca el hilo con menos sockets
         int min_idx = 0, min_cant = pool_sockets_array[0].cantidad_sockets;
         for (int i = 1; i < tamano_pool_hilos; ++i) {
             if (pool_sockets_array[i].cantidad_sockets < min_cant) {
@@ -862,8 +857,6 @@ int main(int argc, char *argv[]) {
         pool->cantidad_sockets++;
         pthread_mutex_unlock(&pool->mutex);
     }
-
-    // tras salir del bucle de accept()
 
     // 1) Forzar swap final del buffer de persistencia bajo mutex
     pthread_mutex_lock(&mutex_buffer);
@@ -929,11 +922,11 @@ int main(int argc, char *argv[]) {
         pthread_mutex_destroy(&grupos[g].mutex);
     }
     
-    // Reporte de sockets huérfanos (sin handshake)
+    
     int huerfanos = 0, consumidores_huerfanos = 0;
     for (int i = 0; i < tamano_pool_hilos; ++i) {
         PoolSockets *pool = &pool_sockets_array[i];
-        pthread_mutex_lock(&pool->mutex); // <-- PROTEGE ACCESO
+        pthread_mutex_lock(&pool->mutex); 
         for (int j = 0; j < pool->cantidad_sockets; ++j) {
             if (pool->estado_cliente[j] == 0) {
                 huerfanos++;
@@ -941,17 +934,16 @@ int main(int argc, char *argv[]) {
                     consumidores_huerfanos++;
             }
         }
-        pthread_mutex_unlock(&pool->mutex); // <-- DESBLOQUEA
+        pthread_mutex_unlock(&pool->mutex); 
     }
     printf("[INFO] Sockets huérfanos (sin handshake): %d (de ellos consumidores: %d)\n", huerfanos, consumidores_huerfanos);
 
-    // Ahora sí, libera la memoria
-    for (int i = 0; i < tamano_pool_hilos; ++i) { // <-- PROTEGE ACCESO
+    for (int i = 0; i < tamano_pool_hilos; ++i) { 
         free(pool_sockets_array[i].sockets);
         free(pool_sockets_array[i].tipo_cliente);
         free(pool_sockets_array[i].estado_cliente);
         free(pool_sockets_array[i].grupo_idx_cliente);
-        free(pool_sockets_array[i].id_consumidor_cliente); // <-- DESTRUYE DESPUÉS DE USAR
+        free(pool_sockets_array[i].id_consumidor_cliente); 
     }
     free(pool_sockets_array);
 
